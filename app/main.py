@@ -141,7 +141,7 @@ def _build_filters(
         clauses.append("upper(postcode) = upper(%s)")
         params.append(filters["postcode"])
     if filters["postcode_prefix"]:
-        clauses.append("upper(postcode) LIKE upper(%s) || '%'")
+        clauses.append("upper(postcode) LIKE upper(%s) || '%%'")
         params.append(filters["postcode_prefix"])
     if filters["town_city"]:
         clauses.append("lower(town_city) = lower(%s)")
