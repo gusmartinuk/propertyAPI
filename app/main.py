@@ -141,10 +141,12 @@ def _build_filters(
     params.append(to_final)
 
     if filters["postcode"]:
-        clauses.append("upper(postcode) = upper(%s)")
+        clauses.append("upper(regexp_replace(postcode, '\\s+', '', 'g')) = upper(regexp_replace(%s, '\\s+', '', 'g'))")
         params.append(filters["postcode"])
     if filters["postcode_prefix"]:
-        clauses.append("upper(postcode) LIKE upper(%s) || '%%'")
+        clauses.append(
+            "upper(regexp_replace(postcode, '\\s+', '', 'g')) LIKE upper(regexp_replace(%s, '\\s+', '', 'g')) || '%%'"
+        )
         params.append(filters["postcode_prefix"])
     if filters["town_city"]:
         clauses.append("lower(town_city) = lower(%s)")
