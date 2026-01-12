@@ -80,15 +80,15 @@ def _ensure_date_range(
     to_date: date | None,
     has_location: bool,
 ) -> tuple[date, date]:
+    base_to = to_date or date.today()
     if not has_location and (from_date is None or to_date is None):
-        base_to = to_date or date.today()
         base_from = base_to - timedelta(days=DEFAULT_NO_LOCATION_MONTHS * 30)
         return base_from, base_to
 
     if from_date is None:
-        from_date = to_date or date.today()
+        from_date = base_to - timedelta(days=MAX_DATE_RANGE_YEARS * 365)
     if to_date is None:
-        to_date = date.today()
+        to_date = base_to
 
     if from_date > to_date:
         raise HTTPException(status_code=400, detail="from must be <= to")
@@ -192,6 +192,12 @@ async def _fetch_all(query: str, params: dict[str, Any]) -> list[dict[str, Any]]
 def _require_min_count(count: int) -> None:
     if count < MIN_GROUP_COUNT:
         raise HTTPException(status_code=404, detail="insufficient data for aggregation")
+
+
+def _pct_change(current: float | None, previous: float | None) -> float | None:
+    if current is None or previous in (None, 0):
+        return None
+    return (current - previous) / previous
 
 
 @app.get(
@@ -459,3 +465,313 @@ async def price_bands(
     for row in rows:
         row["share"] = row["count"] / total_count if total_count else 0
     return {"total_count": total_count, "bands": rows, **echo}
+
+
+@app.get(
+    "/v1/stats/hotspot",
+    summary="Hotspot/coldspot comparison",
+    description="Year-over-year comparison between two consecutive windows.",
+    tags=["stats"],
+)
+async def hotspot(
+    from_: date | None = Query(default=None, alias="from"),
+    to: date | None = Query(default=None),
+    postcode: str | None = Query(default=None),
+    postcode_prefix: str | None = Query(default=None),
+    town_city: str | None = Query(default=None),
+    district: str | None = Query(default=None),
+    county: str | None = Query(default=None),
+    property_type: str | None = Query(default=None),
+    old_new: str | None = Query(default=None),
+    duration: str | None = Query(default=None),
+    window_months: int = Query(default=12, ge=3, le=36),
+) -> dict[str, Any]:
+    if not any([postcode, postcode_prefix, town_city, district, county]):
+        raise HTTPException(status_code=400, detail="location filter required for hotspot")
+    where_sql, params, echo = _build_filters(
+        from_date=from_,
+        to_date=to,
+        postcode=postcode,
+        postcode_prefix=postcode_prefix,
+        town_city=town_city,
+        district=district,
+        county=county,
+        property_type=property_type,
+        old_new=old_new,
+        duration=duration,
+    )
+    params["base_to"] = params["to_date"]
+    params["window_months"] = window_months
+    query = f"""
+        WITH base AS (
+            SELECT price, date_of_transfer
+            FROM ppd
+            WHERE {where_sql}
+              AND date_of_transfer >= %(base_to)s::date - (%(window_months)s::int * INTERVAL '1 month' * 2)
+              AND date_of_transfer <= %(base_to)s::date
+        ),
+        period_a AS (
+            SELECT price FROM base
+            WHERE date_of_transfer >= %(base_to)s::date - (%(window_months)s::int * INTERVAL '1 month')
+        ),
+        period_b AS (
+            SELECT price FROM base
+            WHERE date_of_transfer < %(base_to)s::date - (%(window_months)s::int * INTERVAL '1 month')
+        )
+        SELECT
+            (SELECT COUNT(*) FROM period_a) AS count_a,
+            (SELECT COUNT(*) FROM period_b) AS count_b,
+            (SELECT AVG(price)::float FROM period_a) AS avg_a,
+            (SELECT AVG(price)::float FROM period_b) AS avg_b,
+            (SELECT percentile_cont(0.50) WITHIN GROUP (ORDER BY price) FROM period_a) AS median_a,
+            (SELECT percentile_cont(0.50) WITHIN GROUP (ORDER BY price) FROM period_b) AS median_b
+    """
+    row = await _fetch_one(query, params)
+    if not row:
+        raise HTTPException(status_code=404, detail="no data")
+    _require_min_count(int(row["count_a"]))
+    _require_min_count(int(row["count_b"]))
+    return {
+        **echo,
+        "count_a": row["count_a"],
+        "count_b": row["count_b"],
+        "count_change_pct": _pct_change(row["count_a"], row["count_b"]),
+        "avg_a": row["avg_a"],
+        "avg_b": row["avg_b"],
+        "avg_change_pct": _pct_change(row["avg_a"], row["avg_b"]),
+        "median_a": row["median_a"],
+        "median_b": row["median_b"],
+        "median_change_pct": _pct_change(row["median_a"], row["median_b"]),
+    }
+
+
+@app.get(
+    "/v1/stats/street-summary",
+    summary="Street-level anonymised summary",
+    description="Aggregated stats by street only (no PAON/SAON).",
+    tags=["stats"],
+)
+async def street_summary(
+    from_: date | None = Query(default=None, alias="from"),
+    to: date | None = Query(default=None),
+    postcode: str | None = Query(default=None),
+    postcode_prefix: str | None = Query(default=None),
+    town_city: str | None = Query(default=None),
+    district: str | None = Query(default=None),
+    county: str | None = Query(default=None),
+    property_type: str | None = Query(default=None),
+    old_new: str | None = Query(default=None),
+    duration: str | None = Query(default=None),
+    street: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> dict[str, Any]:
+    if not any([postcode, postcode_prefix]):
+        raise HTTPException(status_code=400, detail="postcode or postcode_prefix is required")
+    where_sql, params, echo = _build_filters(
+        from_date=from_,
+        to_date=to,
+        postcode=postcode,
+        postcode_prefix=postcode_prefix,
+        town_city=town_city,
+        district=district,
+        county=county,
+        property_type=property_type,
+        old_new=old_new,
+        duration=duration,
+    )
+    street_value = _normalize_text(street)
+    if street_value:
+        params["street"] = street_value
+        street_clause = "AND lower(street) = lower(%(street)s)"
+    else:
+        street_clause = ""
+    params["min_group"] = MIN_GROUP_COUNT
+    params["limit"] = limit
+    query = f"""
+        SELECT
+            street,
+            COUNT(*) AS count,
+            AVG(price)::float AS avg_price,
+            percentile_cont(0.50) WITHIN GROUP (ORDER BY price) AS median_price,
+            MIN(price) AS min_price,
+            MAX(price) AS max_price
+        FROM ppd
+        WHERE {where_sql}
+          AND street IS NOT NULL
+          AND btrim(street) <> ''
+          {street_clause}
+        GROUP BY street
+        HAVING COUNT(*) >= %(min_group)s
+        ORDER BY count DESC
+        LIMIT %(limit)s
+    """
+    rows = await _fetch_all(query, params)
+    return {"items": rows, **echo}
+
+
+@app.get(
+    "/v1/stats/investment-metrics",
+    summary="Investment metrics",
+    description="Volatility and momentum derived from monthly medians.",
+    tags=["stats"],
+)
+async def investment_metrics(
+    from_: date | None = Query(default=None, alias="from"),
+    to: date | None = Query(default=None),
+    postcode: str | None = Query(default=None),
+    postcode_prefix: str | None = Query(default=None),
+    town_city: str | None = Query(default=None),
+    district: str | None = Query(default=None),
+    county: str | None = Query(default=None),
+    property_type: str | None = Query(default=None),
+    old_new: str | None = Query(default=None),
+    duration: str | None = Query(default=None),
+) -> dict[str, Any]:
+    if not any([postcode, postcode_prefix, town_city, district, county]) and not (from_ or to):
+        raise HTTPException(status_code=400, detail="location filter or date range required")
+    where_sql, params, echo = _build_filters(
+        from_date=from_,
+        to_date=to,
+        postcode=postcode,
+        postcode_prefix=postcode_prefix,
+        town_city=town_city,
+        district=district,
+        county=county,
+        property_type=property_type,
+        old_new=old_new,
+        duration=duration,
+    )
+    summary_query = f"""
+        SELECT
+            COUNT(*) AS count,
+            AVG(price)::float AS avg_price,
+            stddev_pop(price)::float AS stddev_price
+        FROM ppd
+        WHERE {where_sql}
+    """
+    summary_row = await _fetch_one(summary_query, params)
+    if not summary_row:
+        raise HTTPException(status_code=404, detail="no data")
+    _require_min_count(int(summary_row["count"]))
+
+    params["base_to"] = params["to_date"]
+    params["min_group"] = MIN_GROUP_COUNT
+    momentum_query = f"""
+        SELECT
+            date_trunc('month', date_of_transfer)::date AS period,
+            COUNT(*) AS count,
+            percentile_cont(0.50) WITHIN GROUP (ORDER BY price) AS median_price
+        FROM ppd
+        WHERE {where_sql}
+          AND date_of_transfer >= %(base_to)s::date - INTERVAL '6 months'
+        GROUP BY period
+        HAVING COUNT(*) >= %(min_group)s
+        ORDER BY period
+    """
+    rows = await _fetch_all(momentum_query, params)
+    momentum_value = None
+    momentum_percent = None
+    if len(rows) >= 2:
+        first = rows[0]["median_price"]
+        last = rows[-1]["median_price"]
+        if first:
+            momentum_value = (last - first) / first
+            momentum_percent = momentum_value * 100
+
+    avg_price = summary_row["avg_price"]
+    stddev_price = summary_row["stddev_price"]
+    volatility = (stddev_price / avg_price) if avg_price else None
+    return {
+        **echo,
+        "volatility": volatility,
+        "vw_avg_price": avg_price,
+        "momentum_score": momentum_value,
+        "momentum_percent": momentum_percent,
+    }
+
+
+@app.get(
+    "/v1/summary/postcode",
+    summary="Postcode one-call summary",
+    description="Compact summary for a single postcode.",
+    tags=["summary"],
+)
+async def postcode_summary(postcode: str = Query(...)) -> dict[str, Any]:
+    postcode_value = _normalize_text(postcode)
+    if not postcode_value:
+        raise HTTPException(status_code=400, detail="postcode required")
+    base_to = date.today()
+    last_12m_from = base_to - timedelta(days=365)
+    last_24m_from = base_to - timedelta(days=365 * 2)
+    last_3m_from = base_to - timedelta(days=90)
+
+    def build_where(from_date: date, to_date: date) -> tuple[str, dict[str, Any]]:
+        where_sql, params, _echo = _build_filters(
+            from_date=from_date,
+            to_date=to_date,
+            postcode=postcode_value,
+            postcode_prefix=None,
+            town_city=None,
+            district=None,
+            county=None,
+            property_type=None,
+            old_new=None,
+            duration=None,
+        )
+        return where_sql, params
+
+    where_12m, params_12m = build_where(last_12m_from, base_to)
+    summary_query = f"""
+        SELECT
+            COUNT(*) AS count,
+            AVG(price)::float AS avg_price,
+            percentile_cont(0.50) WITHIN GROUP (ORDER BY price) AS median_price
+        FROM ppd
+        WHERE {where_12m}
+    """
+    summary_12m = await _fetch_one(summary_query, params_12m)
+    if not summary_12m:
+        raise HTTPException(status_code=404, detail="no data")
+    _require_min_count(int(summary_12m["count"]))
+
+    where_prev, params_prev = build_where(last_24m_from, last_12m_from)
+    prev_row = await _fetch_one(summary_query.replace(where_12m, where_prev), params_prev)
+    yoy_change = _pct_change(summary_12m["median_price"], prev_row["median_price"] if prev_row else None)
+
+    where_3m, params_3m = build_where(last_3m_from, base_to)
+    summary_3m = await _fetch_one(summary_query.replace(where_12m, where_3m), params_3m)
+
+    prop_query = f"""
+        SELECT
+            property_type,
+            COUNT(*) AS count,
+            AVG(price)::float AS avg_price,
+            percentile_cont(0.50) WITHIN GROUP (ORDER BY price) AS median_price
+        FROM ppd
+        WHERE {where_12m}
+        GROUP BY property_type
+        HAVING COUNT(*) >= %(min_group)s
+        ORDER BY count DESC
+        LIMIT 3
+    """
+    params_12m["min_group"] = MIN_GROUP_COUNT
+    top_props = await _fetch_all(prop_query, params_12m)
+
+    last_sale_query = f"SELECT MAX(date_of_transfer) AS last_sale_date FROM ppd WHERE {where_12m}"
+    last_sale_row = await _fetch_one(last_sale_query, params_12m)
+    return {
+        "postcode": postcode_value,
+        "latest_12m": {
+            "count": summary_12m["count"],
+            "avg": summary_12m["avg_price"],
+            "median": summary_12m["median_price"],
+            "yoy_change_pct": yoy_change,
+        },
+        "latest_3m": {
+            "count": summary_3m["count"] if summary_3m else 0,
+            "avg": summary_3m["avg_price"] if summary_3m else None,
+            "median": summary_3m["median_price"] if summary_3m else None,
+        },
+        "property_type_top3": top_props,
+        "last_sale_date": last_sale_row["last_sale_date"] if last_sale_row else None,
+    }
