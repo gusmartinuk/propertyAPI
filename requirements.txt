@@ -2,6 +2,7 @@ fastapi
 gunicorn
 uvicorn[standard]
 psycopg[binary]
+psycopg-pool
 sqlalchemy>=2
 alembic
 pydantic-settings
