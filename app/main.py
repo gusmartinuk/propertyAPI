@@ -342,6 +342,7 @@ async def activity(
         old_new=old_new,
         duration=duration,
     )
+    base_to = params[1]
     query = f"""
         SELECT
             COUNT(*) AS count_total,
@@ -354,8 +355,7 @@ async def activity(
         FROM ppd
         WHERE {where_sql}
     """
-    base_to = params[1]
-    row = await _fetch_one(query, params + [base_to, base_to, base_to])
+    row = await _fetch_one(query, [base_to, base_to, base_to] + params)
     if not row:
         raise HTTPException(status_code=404, detail="no data")
     _require_min_count(int(row["count_total"]))
