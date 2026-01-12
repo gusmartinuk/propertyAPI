@@ -112,7 +112,7 @@ def _build_filters(
     property_type: str | None,
     old_new: str | None,
     duration: str | None,
-) -> tuple[str, dict[str, Any], dict[str, Any]]:
+) -> tuple[str, list[Any], dict[str, Any]]:
     if postcode and postcode_prefix:
         raise HTTPException(status_code=400, detail="postcode and postcode_prefix are mutually exclusive")
 
@@ -130,35 +130,37 @@ def _build_filters(
     from_final, to_final = _ensure_date_range(from_date, to_date, has_location)
 
     clauses: list[str] = []
-    params: dict[str, Any] = {"from_date": from_final, "to_date": to_final}
+    params: list[Any] = []
 
-    clauses.append("date_of_transfer >= %(from_date)s")
-    clauses.append("date_of_transfer <= %(to_date)s")
+    clauses.append("date_of_transfer >= %s")
+    params.append(from_final)
+    clauses.append("date_of_transfer <= %s")
+    params.append(to_final)
 
     if filters["postcode"]:
-        clauses.append("upper(postcode) = upper(%(postcode)s)")
-        params["postcode"] = filters["postcode"]
+        clauses.append("upper(postcode) = upper(%s)")
+        params.append(filters["postcode"])
     if filters["postcode_prefix"]:
-        clauses.append("upper(postcode) LIKE upper(%(postcode_prefix)s) || '%'")
-        params["postcode_prefix"] = filters["postcode_prefix"]
+        clauses.append("upper(postcode) LIKE upper(%s) || '%'")
+        params.append(filters["postcode_prefix"])
     if filters["town_city"]:
-        clauses.append("lower(town_city) = lower(%(town_city)s)")
-        params["town_city"] = filters["town_city"]
+        clauses.append("lower(town_city) = lower(%s)")
+        params.append(filters["town_city"])
     if filters["district"]:
-        clauses.append("lower(district) = lower(%(district)s)")
-        params["district"] = filters["district"]
+        clauses.append("lower(district) = lower(%s)")
+        params.append(filters["district"])
     if filters["county"]:
-        clauses.append("lower(county) = lower(%(county)s)")
-        params["county"] = filters["county"]
+        clauses.append("lower(county) = lower(%s)")
+        params.append(filters["county"])
     if filters["property_type"]:
-        clauses.append("upper(property_type) = upper(%(property_type)s)")
-        params["property_type"] = filters["property_type"]
+        clauses.append("upper(property_type) = upper(%s)")
+        params.append(filters["property_type"])
     if filters["old_new"]:
-        clauses.append("upper(old_new) = upper(%(old_new)s)")
-        params["old_new"] = filters["old_new"]
+        clauses.append("upper(old_new) = upper(%s)")
+        params.append(filters["old_new"])
     if filters["duration"]:
-        clauses.append("upper(duration) = upper(%(duration)s)")
-        params["duration"] = filters["duration"]
+        clauses.append("upper(duration) = upper(%s)")
+        params.append(filters["duration"])
 
     where_sql = " AND ".join(clauses) if clauses else "TRUE"
     echo = {
@@ -169,7 +171,7 @@ def _build_filters(
     return where_sql, params, echo
 
 
-async def _fetch_one(query: str, params: dict[str, Any]) -> dict[str, Any] | None:
+async def _fetch_one(query: str, params: list[Any]) -> dict[str, Any] | None:
     pool = get_pool()
     async with pool.connection() as conn:
         conn.row_factory = dict_row
@@ -179,7 +181,7 @@ async def _fetch_one(query: str, params: dict[str, Any]) -> dict[str, Any] | Non
             return dict(row) if row else None
 
 
-async def _fetch_all(query: str, params: dict[str, Any]) -> list[dict[str, Any]]:
+async def _fetch_all(query: str, params: list[Any]) -> list[dict[str, Any]]:
     pool = get_pool()
     async with pool.connection() as conn:
         conn.row_factory = dict_row
@@ -294,11 +296,10 @@ async def time_series(
         FROM ppd
         WHERE {where_sql}
         GROUP BY period
-        HAVING COUNT(*) >= %(min_group)s
+        HAVING COUNT(*) >= %s
         ORDER BY period
     """
-    params["min_group"] = MIN_GROUP_COUNT
-    rows = await _fetch_all(query, params)
+    rows = await _fetch_all(query, params + [MIN_GROUP_COUNT])
     series = [
         {
             "period": row["period"].strftime("%Y-%m"),
@@ -345,16 +346,17 @@ async def activity(
     query = f"""
         SELECT
             COUNT(*) AS count_total,
-            COUNT(*) FILTER (WHERE date_of_transfer >= %(base_to)s::date - INTERVAL '3 months') AS count_last_3m,
-            COUNT(*) FILTER (WHERE date_of_transfer >= %(base_to)s::date - INTERVAL '6 months') AS count_last_6m,
-            COUNT(*) FILTER (WHERE date_of_transfer >= %(base_to)s::date - INTERVAL '12 months') AS count_last_12m,
+            COUNT(*) FILTER (WHERE date_of_transfer >= %s::date - INTERVAL '3 months') AS count_last_3m,
+            COUNT(*) FILTER (WHERE date_of_transfer >= %s::date - INTERVAL '6 months') AS count_last_6m,
+            COUNT(*) FILTER (WHERE date_of_transfer >= %s::date - INTERVAL '12 months') AS count_last_12m,
             COUNT(*) FILTER (WHERE upper(old_new) = 'Y') AS count_new,
             COUNT(*) FILTER (WHERE upper(old_new) = 'N') AS count_old,
             MAX(date_of_transfer) AS latest_transfer_date
         FROM ppd
         WHERE {where_sql}
     """
-    row = await _fetch_one(query, params)
+    base_to = params[1]
+    row = await _fetch_one(query, params + [base_to, base_to, base_to])
     if not row:
         raise HTTPException(status_code=404, detail="no data")
     _require_min_count(int(row["count_total"]))
@@ -402,11 +404,10 @@ async def property_types(
         FROM ppd
         WHERE {where_sql}
         GROUP BY property_type
-        HAVING COUNT(*) >= %(min_group)s
+        HAVING COUNT(*) >= %s
         ORDER BY count DESC
     """
-    params["min_group"] = MIN_GROUP_COUNT
-    rows = await _fetch_all(query, params)
+    rows = await _fetch_all(query, params + [MIN_GROUP_COUNT])
     return {"items": rows, **echo}
 
 
@@ -457,11 +458,10 @@ async def price_bands(
         FROM ppd
         WHERE {where_sql}
         GROUP BY band
-        HAVING COUNT(*) >= %(min_group)s
+        HAVING COUNT(*) >= %s
         ORDER BY count DESC
     """
-    params["min_group"] = MIN_GROUP_COUNT
-    rows = await _fetch_all(query, params)
+    rows = await _fetch_all(query, params + [MIN_GROUP_COUNT])
     for row in rows:
         row["share"] = row["count"] / total_count if total_count else 0
     return {"total_count": total_count, "bands": rows, **echo}
@@ -500,23 +500,22 @@ async def hotspot(
         old_new=old_new,
         duration=duration,
     )
-    params["base_to"] = params["to_date"]
-    params["window_months"] = window_months
+    base_to = params[1]
     query = f"""
         WITH base AS (
             SELECT price, date_of_transfer
             FROM ppd
             WHERE {where_sql}
-              AND date_of_transfer >= %(base_to)s::date - (%(window_months)s::int * INTERVAL '1 month' * 2)
-              AND date_of_transfer <= %(base_to)s::date
+              AND date_of_transfer >= %s::date - (%s::int * INTERVAL '1 month' * 2)
+              AND date_of_transfer <= %s::date
         ),
         period_a AS (
             SELECT price FROM base
-            WHERE date_of_transfer >= %(base_to)s::date - (%(window_months)s::int * INTERVAL '1 month')
+            WHERE date_of_transfer >= %s::date - (%s::int * INTERVAL '1 month')
         ),
         period_b AS (
             SELECT price FROM base
-            WHERE date_of_transfer < %(base_to)s::date - (%(window_months)s::int * INTERVAL '1 month')
+            WHERE date_of_transfer < %s::date - (%s::int * INTERVAL '1 month')
         )
         SELECT
             (SELECT COUNT(*) FROM period_a) AS count_a,
@@ -526,7 +525,19 @@ async def hotspot(
             (SELECT percentile_cont(0.50) WITHIN GROUP (ORDER BY price) FROM period_a) AS median_a,
             (SELECT percentile_cont(0.50) WITHIN GROUP (ORDER BY price) FROM period_b) AS median_b
     """
-    row = await _fetch_one(query, params)
+    row = await _fetch_one(
+        query,
+        params
+        + [
+            base_to,
+            window_months,
+            base_to,
+            base_to,
+            window_months,
+            base_to,
+            window_months,
+        ],
+    )
     if not row:
         raise HTTPException(status_code=404, detail="no data")
     _require_min_count(int(row["count_a"]))
@@ -581,12 +592,12 @@ async def street_summary(
     )
     street_value = _normalize_text(street)
     if street_value:
-        params["street"] = street_value
-        street_clause = "AND lower(street) = lower(%(street)s)"
+        street_clause = "AND lower(street) = lower(%s)"
     else:
         street_clause = ""
-    params["min_group"] = MIN_GROUP_COUNT
-    params["limit"] = limit
+    extra_params: list[Any] = []
+    if street_value:
+        extra_params.append(street_value)
     query = f"""
         SELECT
             street,
@@ -601,11 +612,11 @@ async def street_summary(
           AND btrim(street) <> ''
           {street_clause}
         GROUP BY street
-        HAVING COUNT(*) >= %(min_group)s
+        HAVING COUNT(*) >= %s
         ORDER BY count DESC
-        LIMIT %(limit)s
+        LIMIT %s
     """
-    rows = await _fetch_all(query, params)
+    rows = await _fetch_all(query, params + extra_params + [MIN_GROUP_COUNT, limit])
     return {"items": rows, **echo}
 
 
@@ -654,8 +665,7 @@ async def investment_metrics(
         raise HTTPException(status_code=404, detail="no data")
     _require_min_count(int(summary_row["count"]))
 
-    params["base_to"] = params["to_date"]
-    params["min_group"] = MIN_GROUP_COUNT
+    base_to = params[1]
     momentum_query = f"""
         SELECT
             date_trunc('month', date_of_transfer)::date AS period,
@@ -663,12 +673,12 @@ async def investment_metrics(
             percentile_cont(0.50) WITHIN GROUP (ORDER BY price) AS median_price
         FROM ppd
         WHERE {where_sql}
-          AND date_of_transfer >= %(base_to)s::date - INTERVAL '6 months'
+          AND date_of_transfer >= %s::date - INTERVAL '6 months'
         GROUP BY period
-        HAVING COUNT(*) >= %(min_group)s
+        HAVING COUNT(*) >= %s
         ORDER BY period
     """
-    rows = await _fetch_all(momentum_query, params)
+    rows = await _fetch_all(momentum_query, params + [base_to, MIN_GROUP_COUNT])
     momentum_value = None
     momentum_percent = None
     if len(rows) >= 2:
@@ -705,7 +715,7 @@ async def postcode_summary(postcode: str = Query(...)) -> dict[str, Any]:
     last_24m_from = base_to - timedelta(days=365 * 2)
     last_3m_from = base_to - timedelta(days=90)
 
-    def build_where(from_date: date, to_date: date) -> tuple[str, dict[str, Any]]:
+    def build_where(from_date: date, to_date: date) -> tuple[str, list[Any]]:
         where_sql, params, _echo = _build_filters(
             from_date=from_date,
             to_date=to_date,
@@ -750,12 +760,11 @@ async def postcode_summary(postcode: str = Query(...)) -> dict[str, Any]:
         FROM ppd
         WHERE {where_12m}
         GROUP BY property_type
-        HAVING COUNT(*) >= %(min_group)s
+        HAVING COUNT(*) >= %s
         ORDER BY count DESC
         LIMIT 3
     """
-    params_12m["min_group"] = MIN_GROUP_COUNT
-    top_props = await _fetch_all(prop_query, params_12m)
+    top_props = await _fetch_all(prop_query, params_12m + [MIN_GROUP_COUNT])
 
     last_sale_query = f"SELECT MAX(date_of_transfer) AS last_sale_date FROM ppd WHERE {where_12m}"
     last_sale_row = await _fetch_one(last_sale_query, params_12m)
