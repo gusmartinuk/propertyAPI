@@ -1,14 +1,461 @@
-from fastapi import FastAPI
+from __future__ import annotations
+
+from datetime import date, datetime, timedelta
+from typing import Any
+
+from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.responses import PlainTextResponse
+from psycopg.rows import dict_row
 
-app = FastAPI()
+from app.db import close_pool, get_pool, init_pool
+from app.settings import (
+    CACHE_MAX_AGE,
+    CACHE_MAX_AGE_SUMMARY,
+    DEFAULT_NO_LOCATION_MONTHS,
+    MAX_DATE_RANGE_YEARS,
+    MIN_GROUP_COUNT,
+)
+
+app = FastAPI(
+    title="PPD Insights API",
+    description="Aggregated statistics over UK ONS Price Paid Data.",
+    version="v4",
+)
 
 
-@app.get("/health")
-def health() -> dict:
+@app.on_event("startup")
+async def on_startup() -> None:
+    await init_pool()
+
+
+@app.on_event("shutdown")
+async def on_shutdown() -> None:
+    await close_pool()
+
+
+@app.middleware("http")
+async def add_cache_control(request, call_next):  # type: ignore[no-untyped-def]
+    response: Response = await call_next(request)
+    if response.headers.get("Cache-Control"):
+        return response
+    if request.url.path == "/v1/summary/postcode":
+        response.headers["Cache-Control"] = f"public, max-age={CACHE_MAX_AGE_SUMMARY}"
+    else:
+        response.headers["Cache-Control"] = f"public, max-age={CACHE_MAX_AGE}"
+    return response
+
+
+@app.get("/", response_class=PlainTextResponse, summary="Service status", tags=["stats"])
+def root() -> str:
+    return "ok"
+
+
+@app.get("/health", summary="Health check", tags=["stats"])
+def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/", response_class=PlainTextResponse)
-def root() -> str:
-    return "ok"
+def _normalize_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    trimmed = value.strip()
+    return trimmed or None
+
+
+def _has_location_filter(filters: dict[str, Any]) -> bool:
+    return any(
+        filters.get(key)
+        for key in (
+            "postcode",
+            "postcode_prefix",
+            "town_city",
+            "district",
+            "county",
+        )
+    )
+
+
+def _ensure_date_range(
+    from_date: date | None,
+    to_date: date | None,
+    has_location: bool,
+) -> tuple[date, date]:
+    if not has_location and (from_date is None or to_date is None):
+        base_to = to_date or date.today()
+        base_from = base_to - timedelta(days=DEFAULT_NO_LOCATION_MONTHS * 30)
+        return base_from, base_to
+
+    if from_date is None:
+        from_date = to_date or date.today()
+    if to_date is None:
+        to_date = date.today()
+
+    if from_date > to_date:
+        raise HTTPException(status_code=400, detail="from must be <= to")
+
+    max_days = MAX_DATE_RANGE_YEARS * 365
+    if (to_date - from_date).days > max_days:
+        raise HTTPException(status_code=400, detail="date range too large")
+
+    return from_date, to_date
+
+
+def _build_filters(
+    *,
+    from_date: date | None,
+    to_date: date | None,
+    postcode: str | None,
+    postcode_prefix: str | None,
+    town_city: str | None,
+    district: str | None,
+    county: str | None,
+    property_type: str | None,
+    old_new: str | None,
+    duration: str | None,
+) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    if postcode and postcode_prefix:
+        raise HTTPException(status_code=400, detail="postcode and postcode_prefix are mutually exclusive")
+
+    filters: dict[str, Any] = {
+        "postcode": _normalize_text(postcode),
+        "postcode_prefix": _normalize_text(postcode_prefix),
+        "town_city": _normalize_text(town_city),
+        "district": _normalize_text(district),
+        "county": _normalize_text(county),
+        "property_type": _normalize_text(property_type),
+        "old_new": _normalize_text(old_new),
+        "duration": _normalize_text(duration),
+    }
+    has_location = _has_location_filter(filters)
+    from_final, to_final = _ensure_date_range(from_date, to_date, has_location)
+
+    clauses: list[str] = []
+    params: dict[str, Any] = {"from_date": from_final, "to_date": to_final}
+
+    clauses.append("date_of_transfer >= %(from_date)s")
+    clauses.append("date_of_transfer <= %(to_date)s")
+
+    if filters["postcode"]:
+        clauses.append("upper(postcode) = upper(%(postcode)s)")
+        params["postcode"] = filters["postcode"]
+    if filters["postcode_prefix"]:
+        clauses.append("upper(postcode) LIKE upper(%(postcode_prefix)s) || '%'")
+        params["postcode_prefix"] = filters["postcode_prefix"]
+    if filters["town_city"]:
+        clauses.append("lower(town_city) = lower(%(town_city)s)")
+        params["town_city"] = filters["town_city"]
+    if filters["district"]:
+        clauses.append("lower(district) = lower(%(district)s)")
+        params["district"] = filters["district"]
+    if filters["county"]:
+        clauses.append("lower(county) = lower(%(county)s)")
+        params["county"] = filters["county"]
+    if filters["property_type"]:
+        clauses.append("upper(property_type) = upper(%(property_type)s)")
+        params["property_type"] = filters["property_type"]
+    if filters["old_new"]:
+        clauses.append("upper(old_new) = upper(%(old_new)s)")
+        params["old_new"] = filters["old_new"]
+    if filters["duration"]:
+        clauses.append("upper(duration) = upper(%(duration)s)")
+        params["duration"] = filters["duration"]
+
+    where_sql = " AND ".join(clauses) if clauses else "TRUE"
+    echo = {
+        "from": from_final.isoformat(),
+        "to": to_final.isoformat(),
+        "filters": {key: value for key, value in filters.items() if value is not None},
+    }
+    return where_sql, params, echo
+
+
+async def _fetch_one(query: str, params: dict[str, Any]) -> dict[str, Any] | None:
+    pool = get_pool()
+    async with pool.connection() as conn:
+        conn.row_factory = dict_row
+        async with conn.cursor() as cur:
+            await cur.execute(query, params)
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
+
+async def _fetch_all(query: str, params: dict[str, Any]) -> list[dict[str, Any]]:
+    pool = get_pool()
+    async with pool.connection() as conn:
+        conn.row_factory = dict_row
+        async with conn.cursor() as cur:
+            await cur.execute(query, params)
+            rows = await cur.fetchall()
+            return [dict(row) for row in rows]
+
+
+def _require_min_count(count: int) -> None:
+    if count < MIN_GROUP_COUNT:
+        raise HTTPException(status_code=404, detail="insufficient data for aggregation")
+
+
+@app.get(
+    "/v1/stats/price-summary",
+    summary="Price summary statistics",
+    description="Aggregated price statistics for the selected filters.",
+    tags=["stats"],
+)
+async def price_summary(
+    from_: date | None = Query(default=None, alias="from"),
+    to: date | None = Query(default=None),
+    postcode: str | None = Query(default=None),
+    postcode_prefix: str | None = Query(default=None),
+    town_city: str | None = Query(default=None),
+    district: str | None = Query(default=None),
+    county: str | None = Query(default=None),
+    property_type: str | None = Query(default=None),
+    old_new: str | None = Query(default=None),
+    duration: str | None = Query(default=None),
+) -> dict[str, Any]:
+    where_sql, params, echo = _build_filters(
+        from_date=from_,
+        to_date=to,
+        postcode=postcode,
+        postcode_prefix=postcode_prefix,
+        town_city=town_city,
+        district=district,
+        county=county,
+        property_type=property_type,
+        old_new=old_new,
+        duration=duration,
+    )
+    query = f"""
+        SELECT
+            COUNT(*) AS count,
+            AVG(price)::float AS avg_price,
+            MIN(price) AS min_price,
+            MAX(price) AS max_price,
+            percentile_cont(0.10) WITHIN GROUP (ORDER BY price) AS p10,
+            percentile_cont(0.25) WITHIN GROUP (ORDER BY price) AS p25,
+            percentile_cont(0.50) WITHIN GROUP (ORDER BY price) AS median_price,
+            percentile_cont(0.75) WITHIN GROUP (ORDER BY price) AS p75,
+            percentile_cont(0.90) WITHIN GROUP (ORDER BY price) AS p90
+        FROM ppd
+        WHERE {where_sql}
+    """
+    row = await _fetch_one(query, params)
+    if not row:
+        raise HTTPException(status_code=404, detail="no data")
+    _require_min_count(int(row["count"]))
+    row.update(echo)
+    return row
+
+
+@app.get(
+    "/v1/stats/time-series",
+    summary="Monthly time series",
+    description="Monthly count, average, and median price series.",
+    tags=["stats"],
+)
+async def time_series(
+    from_: date | None = Query(default=None, alias="from"),
+    to: date | None = Query(default=None),
+    postcode: str | None = Query(default=None),
+    postcode_prefix: str | None = Query(default=None),
+    town_city: str | None = Query(default=None),
+    district: str | None = Query(default=None),
+    county: str | None = Query(default=None),
+    property_type: str | None = Query(default=None),
+    old_new: str | None = Query(default=None),
+    duration: str | None = Query(default=None),
+    bucket: str = Query(default="month"),
+) -> dict[str, Any]:
+    if bucket != "month":
+        raise HTTPException(status_code=400, detail="bucket must be month")
+    where_sql, params, echo = _build_filters(
+        from_date=from_,
+        to_date=to,
+        postcode=postcode,
+        postcode_prefix=postcode_prefix,
+        town_city=town_city,
+        district=district,
+        county=county,
+        property_type=property_type,
+        old_new=old_new,
+        duration=duration,
+    )
+    query = f"""
+        SELECT
+            date_trunc('month', date_of_transfer)::date AS period,
+            COUNT(*) AS count,
+            AVG(price)::float AS avg_price,
+            percentile_cont(0.50) WITHIN GROUP (ORDER BY price) AS median_price
+        FROM ppd
+        WHERE {where_sql}
+        GROUP BY period
+        HAVING COUNT(*) >= %(min_group)s
+        ORDER BY period
+    """
+    params["min_group"] = MIN_GROUP_COUNT
+    rows = await _fetch_all(query, params)
+    series = [
+        {
+            "period": row["period"].strftime("%Y-%m"),
+            "count": row["count"],
+            "avg_price": row["avg_price"],
+            "median_price": row["median_price"],
+        }
+        for row in rows
+    ]
+    return {"bucket": "month", "series": series, **echo}
+
+
+@app.get(
+    "/v1/stats/activity",
+    summary="Activity and liquidity",
+    description="Counts by recent time windows and old/new share.",
+    tags=["stats"],
+)
+async def activity(
+    from_: date | None = Query(default=None, alias="from"),
+    to: date | None = Query(default=None),
+    postcode: str | None = Query(default=None),
+    postcode_prefix: str | None = Query(default=None),
+    town_city: str | None = Query(default=None),
+    district: str | None = Query(default=None),
+    county: str | None = Query(default=None),
+    property_type: str | None = Query(default=None),
+    old_new: str | None = Query(default=None),
+    duration: str | None = Query(default=None),
+) -> dict[str, Any]:
+    where_sql, params, echo = _build_filters(
+        from_date=from_,
+        to_date=to,
+        postcode=postcode,
+        postcode_prefix=postcode_prefix,
+        town_city=town_city,
+        district=district,
+        county=county,
+        property_type=property_type,
+        old_new=old_new,
+        duration=duration,
+    )
+    params["base_to"] = params["to_date"]
+    query = f"""
+        SELECT
+            COUNT(*) AS count_total,
+            COUNT(*) FILTER (WHERE date_of_transfer >= %(base_to)s::date - INTERVAL '3 months') AS count_last_3m,
+            COUNT(*) FILTER (WHERE date_of_transfer >= %(base_to)s::date - INTERVAL '6 months') AS count_last_6m,
+            COUNT(*) FILTER (WHERE date_of_transfer >= %(base_to)s::date - INTERVAL '12 months') AS count_last_12m,
+            COUNT(*) FILTER (WHERE upper(old_new) = 'Y') AS count_new,
+            COUNT(*) FILTER (WHERE upper(old_new) = 'N') AS count_old,
+            MAX(date_of_transfer) AS latest_transfer_date
+        FROM ppd
+        WHERE {where_sql}
+    """
+    row = await _fetch_one(query, params)
+    if not row:
+        raise HTTPException(status_code=404, detail="no data")
+    _require_min_count(int(row["count_total"]))
+    share_old_new = {"Y": row["count_new"], "N": row["count_old"]}
+    return {**echo, **row, "share_old_new": share_old_new}
+
+
+@app.get(
+    "/v1/stats/property-types",
+    summary="Property type breakdown",
+    description="Aggregated stats per property type.",
+    tags=["stats"],
+)
+async def property_types(
+    from_: date | None = Query(default=None, alias="from"),
+    to: date | None = Query(default=None),
+    postcode: str | None = Query(default=None),
+    postcode_prefix: str | None = Query(default=None),
+    town_city: str | None = Query(default=None),
+    district: str | None = Query(default=None),
+    county: str | None = Query(default=None),
+    old_new: str | None = Query(default=None),
+    duration: str | None = Query(default=None),
+) -> dict[str, Any]:
+    where_sql, params, echo = _build_filters(
+        from_date=from_,
+        to_date=to,
+        postcode=postcode,
+        postcode_prefix=postcode_prefix,
+        town_city=town_city,
+        district=district,
+        county=county,
+        property_type=None,
+        old_new=old_new,
+        duration=duration,
+    )
+    query = f"""
+        SELECT
+            property_type,
+            COUNT(*) AS count,
+            AVG(price)::float AS avg_price,
+            percentile_cont(0.50) WITHIN GROUP (ORDER BY price) AS median_price,
+            percentile_cont(0.25) WITHIN GROUP (ORDER BY price) AS p25,
+            percentile_cont(0.75) WITHIN GROUP (ORDER BY price) AS p75
+        FROM ppd
+        WHERE {where_sql}
+        GROUP BY property_type
+        HAVING COUNT(*) >= %(min_group)s
+        ORDER BY count DESC
+    """
+    params["min_group"] = MIN_GROUP_COUNT
+    rows = await _fetch_all(query, params)
+    return {"items": rows, **echo}
+
+
+@app.get(
+    "/v1/stats/price-bands",
+    summary="Price band breakdown",
+    description="Counts and share by fixed price bands.",
+    tags=["stats"],
+)
+async def price_bands(
+    from_: date | None = Query(default=None, alias="from"),
+    to: date | None = Query(default=None),
+    postcode: str | None = Query(default=None),
+    postcode_prefix: str | None = Query(default=None),
+    town_city: str | None = Query(default=None),
+    district: str | None = Query(default=None),
+    county: str | None = Query(default=None),
+    property_type: str | None = Query(default=None),
+    old_new: str | None = Query(default=None),
+    duration: str | None = Query(default=None),
+) -> dict[str, Any]:
+    where_sql, params, echo = _build_filters(
+        from_date=from_,
+        to_date=to,
+        postcode=postcode,
+        postcode_prefix=postcode_prefix,
+        town_city=town_city,
+        district=district,
+        county=county,
+        property_type=property_type,
+        old_new=old_new,
+        duration=duration,
+    )
+    total_query = f"SELECT COUNT(*) AS total_count FROM ppd WHERE {where_sql}"
+    total_row = await _fetch_one(total_query, params)
+    total_count = int(total_row["total_count"]) if total_row else 0
+    _require_min_count(total_count)
+
+    query = f"""
+        SELECT
+            CASE
+                WHEN price < 250000 THEN '0-250k'
+                WHEN price < 500000 THEN '250k-500k'
+                WHEN price < 1000000 THEN '500k-1m'
+                ELSE '1m+'
+            END AS band,
+            COUNT(*) AS count
+        FROM ppd
+        WHERE {where_sql}
+        GROUP BY band
+        HAVING COUNT(*) >= %(min_group)s
+        ORDER BY count DESC
+    """
+    params["min_group"] = MIN_GROUP_COUNT
+    rows = await _fetch_all(query, params)
+    for row in rows:
+        row["share"] = row["count"] / total_count if total_count else 0
+    return {"total_count": total_count, "bands": rows, **echo}
