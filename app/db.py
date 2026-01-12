@@ -5,10 +5,18 @@ from app.settings import DATABASE_URL
 _pool: AsyncConnectionPool | None = None
 
 
+def _normalize_conninfo(conninfo: str) -> str:
+    if conninfo.startswith("postgresql+psycopg://"):
+        return conninfo.replace("postgresql+psycopg://", "postgresql://", 1)
+    return conninfo
+
+
 async def init_pool() -> AsyncConnectionPool:
     global _pool
     if _pool is None:
-        _pool = AsyncConnectionPool(conninfo=DATABASE_URL, min_size=1, max_size=10)
+        conninfo = _normalize_conninfo(DATABASE_URL)
+        _pool = AsyncConnectionPool(conninfo=conninfo, min_size=1, max_size=10, open=False)
+        await _pool.open()
     return _pool
 
 
