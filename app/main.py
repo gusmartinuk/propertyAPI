@@ -342,7 +342,6 @@ async def activity(
         old_new=old_new,
         duration=duration,
     )
-    params["base_to"] = params["to_date"]
     query = f"""
         SELECT
             COUNT(*) AS count_total,
