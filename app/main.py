@@ -80,6 +80,8 @@ def _ensure_date_range(
     to_date: date | None,
     has_location: bool,
 ) -> tuple[date, date]:
+    had_from = from_date is not None
+    had_to = to_date is not None
     base_to = to_date or date.today()
     if not has_location and (from_date is None or to_date is None):
         base_from = base_to - timedelta(days=DEFAULT_NO_LOCATION_MONTHS * 30)
@@ -93,9 +95,10 @@ def _ensure_date_range(
     if from_date > to_date:
         raise HTTPException(status_code=400, detail="from must be <= to")
 
-    max_days = MAX_DATE_RANGE_YEARS * 365
-    if (to_date - from_date).days > max_days:
-        raise HTTPException(status_code=400, detail="date range too large")
+    if not (had_from and had_to):
+        max_days = MAX_DATE_RANGE_YEARS * 365
+        if (to_date - from_date).days > max_days:
+            raise HTTPException(status_code=400, detail="date range too large")
 
     return from_date, to_date
 
