@@ -27,6 +27,9 @@ docker compose run --rm api bash /app/scripts/contract_test.sh
 Windows (PowerShell):
 powershell -File .\\scripts\\contract_test.ps1
 
+Fast contract run (JUnit report to reports/junit-fast.xml):
+tests.bat fast
+
 Smoke against Caddy (optional):
 docker compose run --rm api schemathesis run --url http://caddy --checks all --max-examples 20 --workers 2 --request-timeout 10 --report-junit-path /reports/junit-caddy.xml http://caddy/openapi.json
 
