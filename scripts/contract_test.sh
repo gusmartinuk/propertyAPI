@@ -32,7 +32,7 @@ fi
 export HYPOTHESIS_SEED=1
 
 schemathesis run \
-  --base-url http://api:8000 \
+  --url http://api:8000 \
   --checks all \
   --max-examples 50 \
   --workers 2 \
