@@ -28,7 +28,7 @@ Windows (PowerShell):
 powershell -File .\\scripts\\contract_test.ps1
 
 Smoke against Caddy (optional):
-docker compose run --rm api schemathesis run --url http://caddy --checks all --max-examples 20 --workers 2 --request-timeout 10 --report-junit /reports/junit-caddy.xml http://caddy/openapi.json
+docker compose run --rm api schemathesis run --url http://caddy --checks all --max-examples 20 --workers 2 --request-timeout 10 --report-junit-path /reports/junit-caddy.xml http://caddy/openapi.json
 
 Troubleshooting:
 - If API is not ready, the script retries health up to 30 seconds.

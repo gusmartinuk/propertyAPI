@@ -37,5 +37,5 @@ schemathesis run \
   --max-examples 50 \
   --workers 2 \
   --request-timeout 10 \
-  --report-junit /reports/junit.xml \
+  --report-junit-path /reports/junit.xml \
   http://api:8000/openapi.json
