@@ -10,3 +10,5 @@ pytest
 pytest-asyncio
 httpx
 ruff
+schemathesis
+requests
