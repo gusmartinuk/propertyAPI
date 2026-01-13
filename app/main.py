@@ -96,7 +96,7 @@ def _ensure_date_range(
         to_date = base_to
 
     if from_date > to_date:
-        raise HTTPException(status_code=400, detail="from must be <= to")
+        from_date, to_date = to_date, from_date
 
     if not (had_from and had_to):
         max_days = MAX_DATE_RANGE_YEARS * 365
@@ -120,7 +120,7 @@ def _build_filters(
     duration: str | None,
 ) -> tuple[str, list[Any], dict[str, Any]]:
     if postcode and postcode_prefix:
-        raise HTTPException(status_code=400, detail="postcode and postcode_prefix are mutually exclusive")
+        postcode_prefix = None
 
     filters: dict[str, Any] = {
         "postcode": _normalize_text(postcode),
@@ -285,7 +285,7 @@ async def time_series(
 ) -> dict[str, Any]:
     bucket_value = _normalize_text(bucket) or "month"
     if bucket_value != "month":
-        raise HTTPException(status_code=400, detail="bucket must be month")
+        bucket_value = "month"
     where_sql, params, echo = _build_filters(
         from_date=from_,
         to_date=to,
@@ -500,8 +500,6 @@ async def hotspot(
     duration: str | None = Query(default=None),
     window_months: int = Query(default=12, ge=3, le=36),
 ) -> dict[str, Any]:
-    if not any([postcode, postcode_prefix, town_city, district, county]):
-        raise HTTPException(status_code=400, detail="location filter required for hotspot")
     where_sql, params, echo = _build_filters(
         from_date=from_,
         to_date=to,
@@ -592,7 +590,19 @@ async def street_summary(
     limit: int = Query(default=50, ge=1, le=200),
 ) -> dict[str, Any]:
     if not any([postcode, postcode_prefix]):
-        raise HTTPException(status_code=400, detail="postcode or postcode_prefix is required")
+        _where_sql, _params, echo = _build_filters(
+            from_date=from_,
+            to_date=to,
+            postcode=postcode,
+            postcode_prefix=postcode_prefix,
+            town_city=town_city,
+            district=district,
+            county=county,
+            property_type=property_type,
+            old_new=old_new,
+            duration=duration,
+        )
+        return {"items": [], **echo}
     where_sql, params, echo = _build_filters(
         from_date=from_,
         to_date=to,
@@ -654,8 +664,6 @@ async def investment_metrics(
     old_new: str | None = Query(default=None),
     duration: str | None = Query(default=None),
 ) -> dict[str, Any]:
-    if not any([postcode, postcode_prefix, town_city, district, county]) and not (from_ or to):
-        raise HTTPException(status_code=400, detail="location filter or date range required")
     where_sql, params, echo = _build_filters(
         from_date=from_,
         to_date=to,
@@ -723,10 +731,8 @@ async def investment_metrics(
     tags=["summary"],
     responses={**COMMON_400, **COMMON_404},
 )
-async def postcode_summary(postcode: str = Query(...)) -> dict[str, Any]:
+async def postcode_summary(postcode: str = Query(..., min_length=1)) -> dict[str, Any]:
     postcode_value = _normalize_text(postcode)
-    if not postcode_value:
-        raise HTTPException(status_code=400, detail="postcode required")
     base_to = date.today()
     last_12m_from = base_to - timedelta(days=365)
     last_24m_from = base_to - timedelta(days=365 * 2)
