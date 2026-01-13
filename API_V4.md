@@ -1,6 +1,6 @@
-# PPD Insights API v4
+# UK Property Pulse API v4
 
-Aggregated statistics only. No raw rows or address-level detail.
+Market-grade price and time series insights for the UK property market.
 
 ## Endpoints
 

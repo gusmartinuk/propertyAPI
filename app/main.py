@@ -17,8 +17,8 @@ from app.settings import (
 )
 
 app = FastAPI(
-    title="PPD Insights API",
-    description="Aggregated statistics over UK ONS Price Paid Data.",
+    title="UK Property Pulse API",
+    description="Market-grade price and time series insights for the UK property market.",
     version="v4",
 )
 
