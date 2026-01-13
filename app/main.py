@@ -22,6 +22,9 @@ app = FastAPI(
     version="v4",
 )
 
+COMMON_400 = {400: {"description": "Bad Request"}}
+COMMON_404 = {404: {"description": "Not Found"}}
+
 
 @app.on_event("startup")
 async def on_startup() -> None:
@@ -212,6 +215,7 @@ def _pct_change(current: float | None, previous: float | None) -> float | None:
     summary="Price summary statistics",
     description="Aggregated price statistics for the selected filters.",
     tags=["stats"],
+    responses={**COMMON_400, **COMMON_404},
 )
 async def price_summary(
     from_: date | None = Query(default=None, alias="from"),
@@ -264,6 +268,7 @@ async def price_summary(
     summary="Monthly time series",
     description="Monthly count, average, and median price series.",
     tags=["stats"],
+    responses=COMMON_400,
 )
 async def time_series(
     from_: date | None = Query(default=None, alias="from"),
@@ -278,7 +283,8 @@ async def time_series(
     duration: str | None = Query(default=None),
     bucket: str = Query(default="month"),
 ) -> dict[str, Any]:
-    if bucket != "month":
+    bucket_value = _normalize_text(bucket) or "month"
+    if bucket_value != "month":
         raise HTTPException(status_code=400, detail="bucket must be month")
     where_sql, params, echo = _build_filters(
         from_date=from_,
@@ -322,6 +328,7 @@ async def time_series(
     summary="Activity and liquidity",
     description="Counts by recent time windows and old/new share.",
     tags=["stats"],
+    responses={**COMMON_400, **COMMON_404},
 )
 async def activity(
     from_: date | None = Query(default=None, alias="from"),
@@ -373,6 +380,7 @@ async def activity(
     summary="Property type breakdown",
     description="Aggregated stats per property type.",
     tags=["stats"],
+    responses=COMMON_400,
 )
 async def property_types(
     from_: date | None = Query(default=None, alias="from"),
@@ -420,6 +428,7 @@ async def property_types(
     summary="Price band breakdown",
     description="Counts and share by fixed price bands.",
     tags=["stats"],
+    responses={**COMMON_400, **COMMON_404},
 )
 async def price_bands(
     from_: date | None = Query(default=None, alias="from"),
@@ -476,6 +485,7 @@ async def price_bands(
     summary="Hotspot/coldspot comparison",
     description="Year-over-year comparison between two consecutive windows.",
     tags=["stats"],
+    responses={**COMMON_400, **COMMON_404},
 )
 async def hotspot(
     from_: date | None = Query(default=None, alias="from"),
@@ -565,6 +575,7 @@ async def hotspot(
     summary="Street-level anonymised summary",
     description="Aggregated stats by street only (no PAON/SAON).",
     tags=["stats"],
+    responses=COMMON_400,
 )
 async def street_summary(
     from_: date | None = Query(default=None, alias="from"),
@@ -629,6 +640,7 @@ async def street_summary(
     summary="Investment metrics",
     description="Volatility and momentum derived from monthly medians.",
     tags=["stats"],
+    responses={**COMMON_400, **COMMON_404},
 )
 async def investment_metrics(
     from_: date | None = Query(default=None, alias="from"),
@@ -709,6 +721,7 @@ async def investment_metrics(
     summary="Postcode one-call summary",
     description="Compact summary for a single postcode.",
     tags=["summary"],
+    responses={**COMMON_400, **COMMON_404},
 )
 async def postcode_summary(postcode: str = Query(...)) -> dict[str, Any]:
     postcode_value = _normalize_text(postcode)
