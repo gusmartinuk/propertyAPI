@@ -19,12 +19,17 @@ jobs:
               docker compose --env-file .env.example up -d --build
 
       - name: Wait for health
-        run: |
-          for i in $(seq 1 30); do
-            if curl -fsS http://localhost/health > /dev/null; then
-              exit 0
+        run: 
+          for i in $(seq 1 60); do
+            if docker compose exec -T api python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"; then
+              echo "API healthy"
+              break
             fi
-            sleep 2
+            sleep 1
+            if [ "$i" -eq 60 ]; then
+              echo "API did not become healthy in time."
+              exit 1
+            fi
           done
           echo "API did not become healthy in time."
           exit 1
