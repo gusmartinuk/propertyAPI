@@ -1,5 +1,9 @@
 # Minimal FastAPI (Local = Prod via Docker)
 
+[![CI](https://github.com/<OWNER>/<REPO>/actions/workflows/deploy.yml/badge.svg)](https://github.com/<OWNER>/<REPO>/actions/workflows/deploy.yml)
+Replace `<OWNER>/<REPO>` with your GitHub org/user and repo name.
+Data Source: https://www.gov.uk/government/statistical-data-sets/price-paid-data-downloads
+
 Build and start:
 docker compose up -d --build
 
