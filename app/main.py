@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.responses import PlainTextResponse
+from pydantic import BeforeValidator
 from psycopg.rows import dict_row
 
 from app.db import close_pool, get_pool, init_pool
@@ -63,6 +64,17 @@ def _normalize_text(value: str | None) -> str | None:
         return None
     trimmed = value.strip()
     return trimmed or None
+
+
+def _parse_date_nullable(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip().lower() in {"", "null"}:
+        return None
+    return value
+
+
+NullableDate = Annotated[date | None, BeforeValidator(_parse_date_nullable)]
 
 
 def _has_location_filter(filters: dict[str, Any]) -> bool:
@@ -218,8 +230,8 @@ def _pct_change(current: float | None, previous: float | None) -> float | None:
     responses={**COMMON_400, **COMMON_404},
 )
 async def price_summary(
-    from_: date | None = Query(default=None, alias="from"),
-    to: date | None = Query(default=None),
+    from_: NullableDate = Query(default=None, alias="from"),
+    to: NullableDate = Query(default=None),
     postcode: str | None = Query(default=None),
     postcode_prefix: str | None = Query(default=None),
     town_city: str | None = Query(default=None),
@@ -271,8 +283,8 @@ async def price_summary(
     responses=COMMON_400,
 )
 async def time_series(
-    from_: date | None = Query(default=None, alias="from"),
-    to: date | None = Query(default=None),
+    from_: NullableDate = Query(default=None, alias="from"),
+    to: NullableDate = Query(default=None),
     postcode: str | None = Query(default=None),
     postcode_prefix: str | None = Query(default=None),
     town_city: str | None = Query(default=None),
@@ -331,8 +343,8 @@ async def time_series(
     responses={**COMMON_400, **COMMON_404},
 )
 async def activity(
-    from_: date | None = Query(default=None, alias="from"),
-    to: date | None = Query(default=None),
+    from_: NullableDate = Query(default=None, alias="from"),
+    to: NullableDate = Query(default=None),
     postcode: str | None = Query(default=None),
     postcode_prefix: str | None = Query(default=None),
     town_city: str | None = Query(default=None),
@@ -383,8 +395,8 @@ async def activity(
     responses=COMMON_400,
 )
 async def property_types(
-    from_: date | None = Query(default=None, alias="from"),
-    to: date | None = Query(default=None),
+    from_: NullableDate = Query(default=None, alias="from"),
+    to: NullableDate = Query(default=None),
     postcode: str | None = Query(default=None),
     postcode_prefix: str | None = Query(default=None),
     town_city: str | None = Query(default=None),
@@ -431,8 +443,8 @@ async def property_types(
     responses={**COMMON_400, **COMMON_404},
 )
 async def price_bands(
-    from_: date | None = Query(default=None, alias="from"),
-    to: date | None = Query(default=None),
+    from_: NullableDate = Query(default=None, alias="from"),
+    to: NullableDate = Query(default=None),
     postcode: str | None = Query(default=None),
     postcode_prefix: str | None = Query(default=None),
     town_city: str | None = Query(default=None),
@@ -488,8 +500,8 @@ async def price_bands(
     responses={**COMMON_400, **COMMON_404},
 )
 async def hotspot(
-    from_: date | None = Query(default=None, alias="from"),
-    to: date | None = Query(default=None),
+    from_: NullableDate = Query(default=None, alias="from"),
+    to: NullableDate = Query(default=None),
     postcode: str | None = Query(default=None),
     postcode_prefix: str | None = Query(default=None),
     town_city: str | None = Query(default=None),
@@ -576,8 +588,8 @@ async def hotspot(
     responses=COMMON_400,
 )
 async def street_summary(
-    from_: date | None = Query(default=None, alias="from"),
-    to: date | None = Query(default=None),
+    from_: NullableDate = Query(default=None, alias="from"),
+    to: NullableDate = Query(default=None),
     postcode: str | None = Query(default=None),
     postcode_prefix: str | None = Query(default=None),
     town_city: str | None = Query(default=None),
@@ -653,8 +665,8 @@ async def street_summary(
     responses={**COMMON_400, **COMMON_404},
 )
 async def investment_metrics(
-    from_: date | None = Query(default=None, alias="from"),
-    to: date | None = Query(default=None),
+    from_: NullableDate = Query(default=None, alias="from"),
+    to: NullableDate = Query(default=None),
     postcode: str | None = Query(default=None),
     postcode_prefix: str | None = Query(default=None),
     town_city: str | None = Query(default=None),
