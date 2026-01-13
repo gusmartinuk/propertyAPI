@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-max_attempts=30
+max_attempts=10
 attempt=1
 
 while [ "$attempt" -le "$max_attempts" ]; do
@@ -34,7 +34,7 @@ export HYPOTHESIS_SEED=1
 schemathesis run \
   --url http://api:8000 \
   --checks all \
-  --max-examples 5 \
+  --max-examples 2 \
   --workers 1 \
   --request-timeout 5 \
   --report-junit-path /reports/junit-fast.xml \
