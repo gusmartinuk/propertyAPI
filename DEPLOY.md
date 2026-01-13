@@ -49,6 +49,7 @@ Create `/opt/ppd-api/.env` on the server (do not commit this file):
 DATABASE_URL=postgresql://app:app_password@db:5432/ppd_db
 MIN_GROUP_COUNT=2
 LOG_LEVEL=info
+CADDY_HOST=api.iooki.com
 ```
 
 Adjust values as needed for production.

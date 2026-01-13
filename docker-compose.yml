@@ -32,6 +32,8 @@ services:
       - "443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    environment:
+      - CADDY_HOST=${CADDY_HOST:-localhost}
     depends_on:
       - api
 
