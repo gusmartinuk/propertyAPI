@@ -61,7 +61,7 @@ def health() -> dict[str, str]:
 def _normalize_text(value: str | None) -> str | None:
     if value is None:
         return None
-    trimmed = value.strip()
+    trimmed = value.replace("\x00", "").strip()
     return trimmed or None
 
 
@@ -75,8 +75,8 @@ def _parse_date_param(value: str | date | None) -> date | None:
         return None
     try:
         return date.fromisoformat(trimmed)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="invalid date") from exc
+    except ValueError:
+        return None
 
 
 def _has_location_filter(filters: dict[str, Any]) -> bool:
