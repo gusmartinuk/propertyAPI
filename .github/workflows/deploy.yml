@@ -40,8 +40,8 @@ jobs:
       - name: Pytest
         run: docker compose run --rm api pytest
 
-      - name: Contract tests
-        run: docker compose run --rm api bash /app/scripts/contract_test.sh
+      - name: Contract tests fast
+        run: docker compose run --rm api bash /app/scripts/contract_test_fast.sh
 
       - name: Ensure JUnit report exists
         if: always()
