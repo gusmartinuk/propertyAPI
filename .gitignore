@@ -10,6 +10,8 @@ __pycache__/
 .mypy_cache/
 .venv/
 .DS_Store
+# RapidAPI docs (local copy)
+RapidAPI_Docs/
 # SSH keys
 gh_actions_deploy
 gh_actions_deploy.pub
