@@ -14,6 +14,7 @@ from app.settings import (
     DEFAULT_NO_LOCATION_MONTHS,
     MAX_DATE_RANGE_YEARS,
     MIN_GROUP_COUNT,
+    RAPIDAPI_PROXY_SECRET,
 )
 
 app = FastAPI(
@@ -46,6 +47,21 @@ async def add_cache_control(request, call_next):  # type: ignore[no-untyped-def]
     else:
         response.headers["Cache-Control"] = f"public, max-age={CACHE_MAX_AGE}"
     return response
+
+
+@app.middleware("http")
+async def require_rapidapi_proxy_secret(request, call_next):  # type: ignore[no-untyped-def]
+    if not RAPIDAPI_PROXY_SECRET:
+        return await call_next(request)
+
+    if request.url.path in {"/", "/health"}:
+        return await call_next(request)
+
+    provided = request.headers.get("X-RapidAPI-Proxy-Secret")
+    if provided != RAPIDAPI_PROXY_SECRET:
+        raise HTTPException(status_code=403, detail="rapidapi proxy secret required")
+
+    return await call_next(request)
 
 
 @app.get("/", response_class=PlainTextResponse, summary="Service status", tags=["stats"])

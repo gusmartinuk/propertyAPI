@@ -50,6 +50,7 @@ DATABASE_URL=postgresql://app:app_password@db:5432/ppd_db
 MIN_GROUP_COUNT=2
 LOG_LEVEL=info
 CADDY_HOST=api.iooki.com
+RAPIDAPI_PROXY_SECRET=<set-from-rapidapi-dashboard>
 ```
 
 Adjust values as needed for production.
