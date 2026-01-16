@@ -92,7 +92,7 @@ def _load_api_keys() -> set[str]:
 
 @app.middleware("http")
 async def require_api_key_or_rapidapi(request, call_next):  # type: ignore[no-untyped-def]
-    if request.url.path in {"/", "/health"}:
+    if request.url.path in {"/", "/health", "/docs", "/openapi.json", "/redoc", "/doc"}:
         return await call_next(request)
 
     if RAPIDAPI_PROXY_SECRET:
