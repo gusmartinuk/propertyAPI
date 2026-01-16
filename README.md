@@ -1,7 +1,6 @@
 # Minimal FastAPI (Local = Prod via Docker)
 
 [![CI](https://github.com/gusmartinuk/propertyAPI/actions/workflows/deploy.yml/badge.svg)](https://github.com/gusmartinuk/propertyAPI/actions/workflows/deploy.yml)
-Deploy test marker.
 
 Data Source: https://www.gov.uk/government/statistical-data-sets/price-paid-data-downloads
 
@@ -13,6 +12,10 @@ docker compose logs -f --tail=200
 
 Health check:
 curl http://localhost/health
+
+Auth (non-RapidAPI):
+- Use header `X-API-Key`
+- Keys are loaded from `config/api_keys.txt` (hot-reload)
 
 Tests:
 docker compose run --rm api pytest

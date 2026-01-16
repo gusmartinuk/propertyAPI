@@ -19,11 +19,15 @@ Project status:
   - When set, all endpoints except `/` and `/health` require
     `X-RapidAPI-Proxy-Secret` to match.
   - On mismatch, API returns `403 rapidapi proxy secret required`.
+- API key auth supported for non-Rapid traffic via `X-API-Key`.
+  - Keys are read from `config/api_keys.txt` (hot-reload).
+  - On missing/invalid key, API returns `403 api key required`.
 
 Actions:
 - Get the proxy secret from RapidAPI Security tab.
 - Set `RAPIDAPI_PROXY_SECRET` in production `.env`.
 - (Optional) allowlist Rapid Runtime IPs at the firewall or Cloudflare.
+- For non-Rapid access, populate `config/api_keys.txt`.
 
 ## 2) OpenAPI and docs
 

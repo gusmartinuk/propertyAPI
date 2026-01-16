@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+from pathlib import Path
+import time
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Response
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from psycopg.rows import dict_row
 
 from app.db import close_pool, get_pool, init_pool
@@ -14,6 +16,8 @@ from app.settings import (
     DEFAULT_NO_LOCATION_MONTHS,
     MAX_DATE_RANGE_YEARS,
     MIN_GROUP_COUNT,
+    API_KEYS_CACHE_TTL,
+    API_KEYS_FILE,
     RAPIDAPI_PROXY_SECRET,
 )
 
@@ -49,19 +53,60 @@ async def add_cache_control(request, call_next):  # type: ignore[no-untyped-def]
     return response
 
 
-@app.middleware("http")
-async def require_rapidapi_proxy_secret(request, call_next):  # type: ignore[no-untyped-def]
-    if not RAPIDAPI_PROXY_SECRET:
-        return await call_next(request)
+_API_KEYS_CACHE: dict[str, object] = {
+    "keys": set(),
+    "loaded_at": 0.0,
+    "mtime": None,
+}
 
+
+def _load_api_keys() -> set[str]:
+    path = Path(API_KEYS_FILE)
+    now = time.monotonic()
+    cache_keys = _API_KEYS_CACHE["keys"]
+    cache_loaded_at = _API_KEYS_CACHE["loaded_at"]
+    cache_mtime = _API_KEYS_CACHE["mtime"]
+
+    if not path.exists():
+        return set()
+
+    mtime = path.stat().st_mtime
+    if cache_mtime == mtime and (now - float(cache_loaded_at) < API_KEYS_CACHE_TTL):
+        return cache_keys  # type: ignore[return-value]
+
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError:
+        return cache_keys  # type: ignore[return-value]
+
+    keys = {
+        line.strip()
+        for line in content.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    }
+    _API_KEYS_CACHE["keys"] = keys
+    _API_KEYS_CACHE["loaded_at"] = now
+    _API_KEYS_CACHE["mtime"] = mtime
+    return keys
+
+
+@app.middleware("http")
+async def require_api_key_or_rapidapi(request, call_next):  # type: ignore[no-untyped-def]
     if request.url.path in {"/", "/health"}:
         return await call_next(request)
 
-    provided = request.headers.get("X-RapidAPI-Proxy-Secret")
-    if provided != RAPIDAPI_PROXY_SECRET:
-        raise HTTPException(status_code=403, detail="rapidapi proxy secret required")
+    if RAPIDAPI_PROXY_SECRET:
+        provided = request.headers.get("X-RapidAPI-Proxy-Secret")
+        if provided == RAPIDAPI_PROXY_SECRET:
+            return await call_next(request)
 
-    return await call_next(request)
+    api_keys = _load_api_keys()
+    if api_keys:
+        provided_key = request.headers.get("X-API-Key")
+        if provided_key in api_keys:
+            return await call_next(request)
+
+    return JSONResponse(status_code=403, content={"detail": "api key required"})
 
 
 @app.get("/", response_class=PlainTextResponse, summary="Service status", tags=["stats"])

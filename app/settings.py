@@ -12,3 +12,5 @@ DEFAULT_NO_LOCATION_MONTHS = int(os.getenv("DEFAULT_NO_LOCATION_MONTHS", "12"))
 CACHE_MAX_AGE = int(os.getenv("CACHE_MAX_AGE", "300"))
 CACHE_MAX_AGE_SUMMARY = int(os.getenv("CACHE_MAX_AGE_SUMMARY", "900"))
 RAPIDAPI_PROXY_SECRET = os.getenv("RAPIDAPI_PROXY_SECRET") or None
+API_KEYS_FILE = os.getenv("API_KEYS_FILE", "config/api_keys.txt")
+API_KEYS_CACHE_TTL = int(os.getenv("API_KEYS_CACHE_TTL", "10"))
