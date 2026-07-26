@@ -1,242 +1,213 @@
-STAGE 2 SPEC (Codex) — Minimal Working Skeleton (Local = Prod via Docker)
-Objective
+# Stage 2 Specification (Codex): Minimal Working Skeleton (Local = Production via Docker)
 
-Create a minimal FastAPI service that runs production-style locally using Docker Compose:
+## Objective
 
-Reverse proxy: Caddy on http://localhost (port 80)
+Create a minimal FastAPI service that runs in a production-like way locally using Docker Compose.
 
-API: Gunicorn + UvicornWorker (no uvicorn --reload)
+### Runtime topology
 
-DB: PostgreSQL 16 (container + volume)
+- **Reverse proxy:** Caddy on `http://localhost` (port `80`)
+- **API:** Gunicorn + `UvicornWorker` (no `uvicorn --reload`)
+- **Database:** PostgreSQL 16 (container + persistent volume)
+- **Tests:** `pytest` inside the API container
+- **Lint/format:** `ruff` inside the API container
 
-Tests: pytest inside container
+### Must pass
 
-Lint/format: ruff inside container
+- `docker compose up -d --build`
+- `curl http://localhost/health` returns:
+  - `{"status":"ok"}`
 
-Must pass: docker compose up -d --build and curl http://localhost/health returns {"status":"ok"}
+## Constraints
 
-Constraints
+- Do **not** use a local `.venv`.
+- Run everything through Docker.
+- Do **not** commit secrets.
+- Use `.env` locally and commit `.env.example`.
 
-Do not use local .venv at all.
+## Files to create (exact paths)
 
-Run everything via Docker.
+Create the following files with minimal working content:
 
-No secrets committed. Use .env locally and commit .env.example.
+- `docker-compose.yml`
+- `Caddyfile`
+- `Dockerfile`
+- `requirements.txt`
+- `app/main.py`
+- `tests/test_health.py`
+- `.env.example`
+- `.gitignore`
+- `README.md`
+- `agent.md` (use the Git discipline rules already provided in Stage 1; if missing, create it)
 
-Files to create (exact paths)
+## Implementation details
 
-Create these files with minimal working content:
+### 1) `docker-compose.yml`
 
-docker-compose.yml
+Define the following services:
 
-Caddyfile
+#### `db`
 
-Dockerfile
+- `image: postgres:16`
+- Environment variables:
+  - `POSTGRES_DB=app`
+  - `POSTGRES_USER=app`
+  - `POSTGRES_PASSWORD=app_password`
+- Volume:
+  - `pgdata:/var/lib/postgresql/data`
+- Healthcheck:
+  - Use `pg_isready`
+- Ports:
+  - Expose `5432:5432` (keep available for local development)
 
-requirements.txt
+#### `api`
 
-app/main.py
+- Build from `Dockerfile`
+- `env_file: .env`
+- `depends_on: db` with condition `service_healthy`
+- Internal port:
+  - `8000`
+- Do **not** publish API directly to host (only Caddy should expose externally)
 
-tests/test_health.py
+#### `caddy`
 
-.env.example
+- `image: caddy:2`
+- Ports:
+  - `80:80`
+- Mount:
+  - `./Caddyfile:/etc/caddy/Caddyfile:ro`
+- `depends_on: api`
 
-.gitignore
+---
 
-README.md
+### 2) `Caddyfile`
 
-agent.md (use the git discipline rules already provided in stage 1; if missing, create it)
+- Listen on `:80`
+- Reverse proxy all traffic to `api:8000`
+- Minimal logging is acceptable
 
-Implementation details
-1) docker-compose.yml
+---
 
-Services:
+### 3) `Dockerfile`
 
-db:
+- Base image: `python:3.12-slim`
+- Copy `requirements.txt`, then install dependencies
+- Copy project files
+- Runtime command **must** be Gunicorn:
 
-image: postgres:16
-
-env: POSTGRES_DB=app, POSTGRES_USER=app, POSTGRES_PASSWORD=app_password
-
-volume: pgdata:/var/lib/postgresql/data
-
-healthcheck using pg_isready
-
-expose port 5432:5432 (keep it open for local dev)
-
-api:
-
-build from Dockerfile
-
-env_file: .env
-
-depends_on db with condition service_healthy
-
-internal port: 8000 (do NOT publish to host; only caddy should expose)
-
-caddy:
-
-image: caddy:2
-
-ports: 80:80
-
-mount ./Caddyfile:/etc/caddy/Caddyfile:ro
-
-depends_on: api
-
-2) Caddyfile
-
-Listen on :80
-
-Reverse proxy everything to api:8000
-
-Minimal logging is OK.
-
-3) Dockerfile
-
-Base: python:3.12-slim
-
-Copy requirements.txt then install
-
-Copy project
-
-Run command MUST be gunicorn:
-
+```bash
 gunicorn -k uvicorn.workers.UvicornWorker -w 2 -b 0.0.0.0:8000 app.main:app
+```
 
-No reload, no dev-only command.
+- No reload mode
+- No development-only runtime command
 
-4) requirements.txt
+---
 
-Minimal deps:
+### 4) `requirements.txt`
 
-fastapi
+Minimum dependencies:
 
-gunicorn
+- `fastapi`
+- `gunicorn`
+- `uvicorn[standard]`
+- `psycopg[binary]`
+- `sqlalchemy>=2`
+- `alembic`
+- `pydantic-settings`
+- `pytest`
+- `pytest-asyncio`
+- `httpx`
+- `ruff`
 
-uvicorn[standard]
+---
 
-psycopg[binary]
+### 5) `app/main.py`
 
-sqlalchemy>=2
+- Create a FastAPI app
+- Routes:
+  - `GET /` returns plain text (e.g. `"ok"`)
+  - `GET /health` returns JSON: `{ "status": "ok" }`
+- Do not use the database yet (database integration is for later stages)
+- Keep implementation intentionally minimal
 
-alembic
+---
 
-pydantic-settings
+### 6) `tests/test_health.py`
 
-pytest
+Use `fastapi.testclient` **or** `httpx` with ASGI transport.
 
-pytest-asyncio
+Tests required:
 
-httpx
+- `/health` returns status `200` and JSON `{"status": "ok"}`
+- `/` returns status `200`
 
-ruff
+---
 
-5) app/main.py
-
-Create FastAPI app
-
-Routes:
-
-GET / returns plain text e.g. "ok"
-
-GET /health returns JSON { "status": "ok" }
-
-No DB usage yet (DB will be used in later stages)
-
-Keep code tiny.
-
-6) tests/test_health.py
-
-Use fastapi.testclient OR httpx + ASGI transport.
-
-Tests:
-
-/health returns status 200 and JSON {"status": "ok"}
-
-/ returns 200
-
-7) .env.example
+### 7) `.env.example`
 
 Include:
 
+```env
 DATABASE_URL=postgresql+psycopg://app:app_password@db:5432/app
-
 ENV=local
-
 LOG_LEVEL=info
-Codex must also create a local .env from .env.example BUT must not commit .env.
+```
 
-8) .gitignore
+Codex must also create a local `.env` from `.env.example`, but must **not** commit `.env`.
+
+---
+
+### 8) `.gitignore`
 
 Must include:
 
-.env
+- `.env`
+- `__pycache__/`
+- `.pytest_cache/`
+- `.ruff_cache/`
+- `.idea/`
+- `.vscode/` (optional)
+- `*.pyc`
 
-__pycache__/
+---
 
-.pytest_cache/
+### 9) `README.md`
 
-.ruff_cache/
+Include only essential commands for:
 
-.idea/
+- build/up
+- logs
+- health check via `curl`
+- tests
+- lint/format
 
-.vscode/ (optional)
+## Git workflow (mandatory)
 
-*.pyc
+- Initialise Git repository if missing.
+- Create branch: `feat/bootstrap-skeleton`
+- Commit after each logical step using Conventional Commits, e.g.:
+  - `chore: bootstrap docker compose with caddy api db`
+  - `feat: add minimal fastapi app with health endpoint`
+  - `test: add health endpoint tests`
+  - `chore: add ruff and pytest container commands docs`
 
-9) README.md
+### Before final commit
 
-Include only essential commands:
+Run:
 
-build/up
+- `docker compose up -d --build`
+- `docker compose logs --tail=50`
+- `curl http://localhost/health`
+- `docker compose run --rm api pytest`
+- `docker compose run --rm api ruff check .`
+- `docker compose run --rm api ruff format .`
+  - Formatting may modify files; commit changes if it does
 
-logs
+## Acceptance criteria
 
-curl health
-
-tests
-
-lint/format
-
-Git workflow (mandatory)
-
-Initialize git repo if missing.
-
-Create branch: feat/bootstrap-skeleton
-
-Commit after each logical step with Conventional Commits, e.g.:
-
-chore: bootstrap docker compose with caddy api db
-
-feat: add minimal fastapi app with health endpoint
-
-test: add health endpoint tests
-
-chore: add ruff and pytest container commands docs
-
-Before final commit:
-
-Run: docker compose up -d --build
-
-Run: docker compose logs --tail=50
-
-Run: curl http://localhost/health
-
-Run: docker compose run --rm api pytest
-
-Run: docker compose run --rm api ruff check .
-
-Run: docker compose run --rm api ruff format . (format may modify; commit if it changes files)
-
-Acceptance criteria
-
-docker compose up -d --build succeeds
-
-curl http://localhost/health returns expected JSON
-
-docker compose run --rm api pytest passes
-
-No .env committed
-
-All requested files exist in correct paths
+- `docker compose up -d --build` succeeds
+- `curl http://localhost/health` returns expected JSON
+- `docker compose run --rm api pytest` passes
+- No `.env` file is committed
+- All requested files exist at the correct paths
