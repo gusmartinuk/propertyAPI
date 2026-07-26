@@ -1,3 +1,4 @@
-rk_live_3b6d7c5a8f9e42c1a0d7f2b1c3e4a5d6
-rk_live_8f1a2b3c4d5e6f7091a2b3c4d5e6f708
-rk_live_0c9d8e7f6a5b4c3d2e1f0a9b8c7d6e5f
+# Placeholder API keys for local development only
+# Replace with your own non-production keys in local environments.
+rk_dev_example_key_1
+rk_dev_example_key_2
