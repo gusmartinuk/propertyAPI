@@ -1,19 +1,23 @@
-1) Codex Ortam Hazırlama Spec (Local = Prod)
-Hedef
+# 1) Codex Environment Setup Spec (Local = Production-like)
 
-Tek komutla ayağa kalksın: docker compose up -d --build
+## Goal
 
-Tek komutla test: docker compose run --rm api pytest
+Set up a local environment that behaves like production as closely as possible, with simple one-command workflows:
 
-Trafik: http://localhost üzerinden Caddy -> API
+- Start services with one command:  
+  `docker compose up -d --build`
+- Run tests with one command:  
+  `docker compose run --rm api pytest`
+- Route traffic through Caddy on `http://localhost` to the API
+- Run API in production mode using Gunicorn + Uvicorn worker
+- Use PostgreSQL in a container with a persistent volume
+- Manage DB migrations with Alembic inside containers
 
-API prod modu: gunicorn + uvicorn worker
+---
 
-DB: Postgres container, kalıcı volume
+## Repository Structure
 
-Migration: Alembic, container içinde çalıştırılır
-
-Repo yapısı
+```text
 myapi/
   app/
     main.py
@@ -30,69 +34,96 @@ myapi/
   .env.example
   .gitignore
   agent.md
+```
 
-Docker Compose (local prod-like)
+---
 
-Servisler:
+## Docker Compose (Local, Production-like)
 
-db : postgres:16 + volume + healthcheck
+### Services
 
-api: Dockerfile build, gunicorn ile 8000’de
+- **db**  
+  - Image: `postgres:16`  
+  - Persistent volume enabled  
+  - Healthcheck configured
 
-caddy: 80’den dinler, api:8000’e proxy
+- **api**  
+  - Built from local `Dockerfile`  
+  - Runs on port `8000` via Gunicorn
 
-Portlar:
+- **caddy**  
+  - Listens on port `80`  
+  - Reverse proxies traffic to `api:8000`
 
-Host: 80 -> caddy:80
+### Ports
 
-Host: 5432 -> db:5432 (opsiyonel; dışarıdan bağlanmak istersen açık kalsın)
+- `Host 80 -> caddy:80`
+- `Host 5432 -> db:5432` *(optional; keep open only if external DB access is needed)*
 
-Ortam değişkenleri
+---
 
-.env (repoya girmez)
+## Environment Variables
 
+Use a local `.env` file (do **not** commit this file):
+
+```env
 DATABASE_URL=postgresql+psycopg://app:app_password@db:5432/app
-
 ENV=local
-
 LOG_LEVEL=info
+```
 
-Çalıştırma komutları
+---
 
-Başlat:
+## Run Commands
 
+### Start services
+
+```bash
 docker compose up -d --build
+```
 
-Log:
+### View logs
 
+```bash
 docker compose logs -f --tail=200
+```
 
-Test:
+### Run tests
 
+```bash
 docker compose run --rm api pytest
+```
 
-Lint/format:
+### Lint / format
 
+```bash
 docker compose run --rm api ruff check .
-
 docker compose run --rm api ruff format .
+```
 
-Migration:
+### Run migrations
 
+```bash
 docker compose run --rm api alembic upgrade head
+```
 
-(ilk kurulumda) docker compose run --rm api alembic revision --autogenerate -m "init"
+### Create initial migration (first setup)
 
-Minimum endpointler
+```bash
+docker compose run --rm api alembic revision --autogenerate -m "init"
+```
 
-GET /health -> { "status": "ok" }
+---
 
-GET / -> basit “service up” metni
+## Minimum Endpoints
 
-VS Code ayarı
+- `GET /health` -> `{ "status": "ok" }`
+- `GET /` -> simple `"service up"` response text
 
-Workspace: proje kökü
+---
 
-Terminal: VS Code içinde sadece docker compose ... çalıştırılacak
+## VS Code Setup
 
-Python extension zorunlu değil, sadece lint için istersen (ama tool çalıştırma Docker üzerinden)
+- Open the **project root** as the workspace
+- In VS Code terminal, run commands only through `docker compose ...`
+- Python extension is optional (useful for linting), but all tooling should run via Docker
